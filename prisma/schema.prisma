@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Route {
+  id        String   @id @default(cuid())
+  path      String
+  method    String
+  upstream  String
+  stripPath String?
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  rateLimitWindowMs  Int?
+rateLimitMax       Int?
+rateLimitKeyBy     String?
+rateLimitKeyHeader String?
+cbFailureThreshold Int?
+cbWindowSize Int?
+cbCooldownMs Int?
+cbSuccessThreshold Int?
+authMode AuthMode @default(none) 
+authJwtSecret String?
+authJwtRequiredClaims Json? 
+authKeyHeader String?
+requestHeaderTransform  Json?
+requestBodyTransform    Json?
+requestPathTransform    Json?
+responseHeaderTransform Json?
+responseBodyTransform   Json?
+
+  logs RequestLog[]
+
+  @@unique([path, method])
+  @@map("routes")
+}
+
+model RequestLog {
+  id           String   @id @default(cuid())
+  routeId      String
+  method       String
+  incomingPath String
+  upstreamUrl  String
+  statusCode   Int
+  latencyMs    Int
+  error        String?
+  timestamp    DateTime @default(now())
+
+  route Route @relation(fields: [routeId], references: [id], onDelete: Restrict)
+
+  // 1. Composite Index: Perfect for "Get logs for Route X between Time A and Time B"
+  @@index([routeId, timestamp(sort: Desc)])
+  
+  // 2. Status Code Index: Perfect for "Count all 500 errors today"
+  @@index([statusCode, timestamp(sort: Desc)])
+
+  @@map("request_logs")
+}
+model ApiKey {
+  id         String    @id @default(cuid())
+  name       String
+  keyHash    String    @unique
+  keyPrefix  String                        
+  routeScope String[]  @default([])
+  expiresAt  DateTime?
+  enabled    Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  @@index([keyHash])
+  @@map("api_keys")
+}
+
+enum AuthMode {
+  none
+  apiKey
+  jwt
+
+}
