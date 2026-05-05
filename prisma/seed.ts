@@ -1,96 +1,896 @@
-import "dotenv/config";
-import { prisma } from "../src/lib/prisma";
-import { generateApiKey } from "../src/lib/key-generator"; // 👈 Make sure this path is correct
+import { PrismaClient } from "@prisma/client";
+import { createHash, randomBytes } from "crypto";
+import { subDays, subHours, subMinutes, addDays } from "date-fns";
+import {prisma} from "../src/lib/prisma";
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function hashKey(plaintext: string): string {
+    return createHash("sha256").update(plaintext).digest("hex");
+}
+
+function randomInt(min: number, max: number): number {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomItem<T>(arr: T[]): T {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randomLatency(statusCode: number): number {
+    if (statusCode >= 500) return randomInt(400, 1200);
+    if (statusCode === 429) return randomInt(5, 20);
+    if (statusCode >= 400) return randomInt(30, 150);
+    return randomInt(12, 380);
+}
+
+function weightedStatusCode(): number {
+    const roll = Math.random();
+    if (roll < 0.68) return 200;
+    if (roll < 0.74) return 201;
+    if (roll < 0.78) return 204;
+    if (roll < 0.82) return 400;
+    if (roll < 0.85) return 401;
+    if (roll < 0.87) return 403;
+    if (roll < 0.89) return 404;
+    if (roll < 0.92) return 429;
+    if (roll < 0.95) return 500;
+    if (roll < 0.98) return 502;
+    return 503;
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+const ROUTES = [
+    {
+        path: "/api/v1/users",
+        method: "GET",
+        upstream: "http://user-service:4000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 1000,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "jwt" as const,
+        authJwtSecret: "user-service-secret-min-32-chars-long",
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: [
+            { op: "set", header: "X-Service-Version", value: "v1" },
+            { op: "set", header: "X-Request-Source", value: "gateway" },
+        ],
+        responseHeaderTransform: [
+            { op: "remove", header: "X-Powered-By" },
+            { op: "remove", header: "Server" },
+        ],
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/users",
+        method: "POST",
+        upstream: "http://user-service:4000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 50,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "jwt" as const,
+        authJwtSecret: "user-service-secret-min-32-chars-long",
+        authJwtRequiredClaims: { role: "admin" },
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: [
+            { op: "rename", from: "userId", to: "user_id" },
+            { op: "set", field: "createdVia", value: "gateway" },
+        ],
+        responseBodyTransform: [
+            { op: "remove", field: "passwordHash" },
+            { op: "remove", field: "internalId" },
+        ],
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/users/:id",
+        method: "PATCH",
+        upstream: "http://user-service:4000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 100,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "jwt" as const,
+        authJwtSecret: "user-service-secret-min-32-chars-long",
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/users/:id",
+        method: "DELETE",
+        upstream: "http://user-service:4000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 20,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "jwt" as const,
+        authJwtSecret: "user-service-secret-min-32-chars-long",
+        authJwtRequiredClaims: { role: "admin" },
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/products",
+        method: "GET",
+        upstream: "http://product-service:5000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 2000,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 10,
+        cbWindowSize: 20,
+        cbCooldownMs: 15000,
+        cbSuccessThreshold: 3,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: [
+            { op: "set", header: "Cache-Control", value: "public, max-age=300" },
+        ],
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/products",
+        method: "POST",
+        upstream: "http://product-service:5000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 30,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/orders",
+        method: "GET",
+        upstream: "http://order-service:6000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 500,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 45000,
+        cbSuccessThreshold: 2,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: [
+            { op: "set", header: "X-Gateway-Version", value: "2.0" },
+        ],
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: [
+            { op: "remove", field: "internalOrderId" },
+            { op: "remove", field: "processorRef" },
+        ],
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/orders",
+        method: "POST",
+        upstream: "http://order-service:6000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 100,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: [
+            { op: "set", field: "source", value: "gateway" },
+            { op: "rename", from: "customerId", to: "customer_id" },
+        ],
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/payments",
+        method: "POST",
+        upstream: "http://payment-service:7000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 50,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 120000,
+        cbSuccessThreshold: 1,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: [
+            { op: "set", header: "X-Idempotency-Source", value: "gateway" },
+        ],
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: [
+            { op: "remove", field: "processorSecret" },
+            { op: "remove", field: "rawResponse" },
+        ],
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/payments/webhook",
+        method: "POST",
+        upstream: "http://payment-service:7000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 200,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 10,
+        cbWindowSize: 20,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 3,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/notifications",
+        method: "POST",
+        upstream: "http://notification-service:8000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 300,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/search",
+        method: "GET",
+        upstream: "http://search-service:9000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 500,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 20000,
+        cbSuccessThreshold: 2,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: [
+            { op: "set", header: "Cache-Control", value: "private, max-age=60" },
+        ],
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: {
+            stripPrefix: "/api/v1/search",
+            addPrefix: "/v2/search",
+        },
+    },
+    {
+        path: "/api/v1/analytics",
+        method: "GET",
+        upstream: "http://analytics-service:10000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 100,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "jwt",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "jwt" as const,
+        authJwtSecret: "analytics-service-secret-32-chars!",
+        authJwtRequiredClaims: { role: "analyst" },
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/admin",
+        method: "ALL",
+        upstream: "http://admin-service:3000",
+        stripPath: null,
+        enabled: true,
+        rateLimitMax: 200,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "jwt" as const,
+        authJwtSecret: "admin-service-jwt-secret-32-chars!!",
+        authJwtRequiredClaims: { role: "admin" },
+        authKeyHeader: null,
+        requestHeaderTransform: [
+            { op: "set", header: "X-Admin-Gateway", value: "true" },
+        ],
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/files/upload",
+        method: "POST",
+        upstream: "http://file-service:11000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 20,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 3,
+        cbWindowSize: 5,
+        cbCooldownMs: 60000,
+        cbSuccessThreshold: 1,
+        authMode: "jwt" as const,
+        authJwtSecret: "file-service-jwt-secret-32-chars!!!",
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/files",
+        method: "GET",
+        upstream: "http://file-service:11000",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 500,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "jwt" as const,
+        authJwtSecret: "file-service-jwt-secret-32-chars!!!",
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/health",
+        method: "GET",
+        upstream: "http://health-service:12000",
+        stripPath: null,
+        enabled: true,
+        rateLimitMax: null,
+        rateLimitWindowMs: null,
+        rateLimitKeyBy: null,
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: null,
+        cbWindowSize: null,
+        cbCooldownMs: null,
+        cbSuccessThreshold: null,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/inventory",
+        method: "GET",
+        upstream: "http://inventory-service:8080",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 800,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "ip",
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/api/v1/inventory",
+        method: "PUT",
+        upstream: "http://inventory-service:8080",
+        stripPath: "/api/v1",
+        enabled: true,
+        rateLimitMax: 100,
+        rateLimitWindowMs: 60000,
+        rateLimitKeyBy: "apiKey",
+        rateLimitKeyHeader: "x-api-key",
+        cbFailureThreshold: 5,
+        cbWindowSize: 10,
+        cbCooldownMs: 30000,
+        cbSuccessThreshold: 2,
+        authMode: "apiKey" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: "x-api-key",
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/deprecated/v0/users",
+        method: "ALL",
+        upstream: "http://legacy-service:9999",
+        stripPath: null,
+        enabled: false,
+        rateLimitMax: null,
+        rateLimitWindowMs: null,
+        rateLimitKeyBy: null,
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: null,
+        cbWindowSize: null,
+        cbCooldownMs: null,
+        cbSuccessThreshold: null,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+    {
+        path: "/deprecated/v0/orders",
+        method: "ALL",
+        upstream: "http://legacy-service:9999",
+        stripPath: null,
+        enabled: false,
+        rateLimitMax: null,
+        rateLimitWindowMs: null,
+        rateLimitKeyBy: null,
+        rateLimitKeyHeader: null,
+        cbFailureThreshold: null,
+        cbWindowSize: null,
+        cbCooldownMs: null,
+        cbSuccessThreshold: null,
+        authMode: "none" as const,
+        authJwtSecret: null,
+        authJwtRequiredClaims: null,
+        authKeyHeader: null,
+        requestHeaderTransform: null,
+        responseHeaderTransform: null,
+        requestBodyTransform: null,
+        responseBodyTransform: null,
+        requestPathTransform: null,
+    },
+];
+
+// ---------------------------------------------------------------------------
+// API Keys
+// ---------------------------------------------------------------------------
+
+const API_KEY_DEFINITIONS = [
+    {
+        name: "Production Web App",
+        plaintext: "gw_live_prod_web_app_key_abc123xyz789",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subMinutes(new Date(), 8),
+    },
+    {
+        name: "Mobile Client iOS",
+        plaintext: "gw_live_mobile_ios_key_def456uvw012",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subMinutes(new Date(), 22),
+    },
+    {
+        name: "Mobile Client Android",
+        plaintext: "gw_live_mobile_android_key_ghi789rst345",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 1),
+    },
+    {
+        name: "Third Party Logistics",
+        plaintext: "gw_live_logistics_partner_jkl012opq678",
+        routeScope: [] as string[],
+        expiresAt: addDays(new Date(), 90),
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 3),
+    },
+    {
+        name: "Payment Processor Webhook",
+        plaintext: "gw_live_payment_webhook_mno345lmn901",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subMinutes(new Date(), 45),
+    },
+    {
+        name: "Analytics Pipeline",
+        plaintext: "gw_live_analytics_pipe_pqr678ijk234",
+        routeScope: [] as string[],
+        expiresAt: addDays(new Date(), 180),
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 6),
+    },
+    {
+        name: "Internal CI Runner",
+        plaintext: "gw_live_ci_runner_internal_stu901fed567",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 12),
+    },
+    {
+        name: "Staging Environment",
+        plaintext: "gw_test_staging_env_vwx234cba890",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 2),
+    },
+    {
+        name: "Partner Integration Alpha",
+        plaintext: "gw_live_partner_alpha_yza567xyz123",
+        routeScope: [] as string[],
+        expiresAt: addDays(new Date(), 30),
+        enabled: true,
+        lastUsedAt: subDays(new Date(), 1),
+    },
+    {
+        name: "Partner Integration Beta",
+        plaintext: "gw_live_partner_beta_bcd890wvu456",
+        routeScope: [] as string[],
+        expiresAt: addDays(new Date(), 60),
+        enabled: true,
+        lastUsedAt: subDays(new Date(), 2),
+    },
+    {
+        name: "Data Warehouse Sync",
+        plaintext: "gw_live_warehouse_sync_efg123tsr789",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subHours(new Date(), 4),
+    },
+    {
+        name: "Monitoring Agent",
+        plaintext: "gw_live_monitoring_agent_hij456qpo012",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: true,
+        lastUsedAt: subMinutes(new Date(), 5),
+    },
+    {
+        name: "Deprecated SDK v1",
+        plaintext: "gw_live_deprecated_sdk_v1_klm789nml345",
+        routeScope: [] as string[],
+        expiresAt: subDays(new Date(), 30),
+        enabled: true,
+        lastUsedAt: subDays(new Date(), 31),
+    },
+    {
+        name: "Old Partner Key",
+        plaintext: "gw_live_old_partner_decommission_nop012kji678",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: false,
+        lastUsedAt: subDays(new Date(), 60),
+    },
+    {
+        name: "Load Test Runner",
+        plaintext: "gw_test_load_test_runner_qrs345hgf901",
+        routeScope: [] as string[],
+        expiresAt: null,
+        enabled: false,
+        lastUsedAt: subDays(new Date(), 14),
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Log generation config
+// ---------------------------------------------------------------------------
+
+const CLIENT_IPS = [
+    "192.168.1.1",
+    "192.168.1.45",
+    "45.76.12.102",
+    "45.76.12.198",
+    "12.231.45.6",
+    "12.231.45.89",
+    "172.16.0.5",
+    "172.16.0.23",
+    "104.21.45.67",
+    "104.21.45.234",
+    "198.51.100.14",
+    "203.0.113.42",
+];
+
+// ---------------------------------------------------------------------------
+// Main seed function
+// ---------------------------------------------------------------------------
 
 async function main() {
-    console.log("🌱 Seeding the database...");
+    console.log("Clearing existing gateway data...");
 
-    // Clear existing data so we can re-seed cleanly without duplicate ID errors
+    await prisma.requestLog.deleteMany();
     await prisma.apiKey.deleteMany();
     await prisma.route.deleteMany();
-
-    // 1. Create the API-Key protected route (Combining your existing config)
-    // 1. Create the API-Key protected route
-    await prisma.route.create({
-        data: {
-            id: "route_users_api",
-            path: "/api/users",
-            method: "ALL",
-            upstream: "http://localhost:4001",
-            stripPath: "/api",
-            enabled: true,
-
-            rateLimitWindowMs: 60000,
-            rateLimitMax: 10,
-            rateLimitKeyBy: "ip",
-            cbFailureThreshold: 3,
-            cbWindowSize: 5,
-            cbCooldownMs: 3000,
-            cbSuccessThreshold: 1,
-
-            authMode: "apiKey",
-
-            // 🟢 NEW: Add these Phase 7 Transform Configurations!
-            requestHeaderTransform: [
-                { op: "set", header: "X-Service-Token", value: "internal_token_abc" },
-                { op: "set", header: "X-Gateway-Request-Id", value: "{{requestId}}" },
-                { op: "remove", header: "X-Forwarded-For" },
-            ],
-            requestBodyTransform: [
-                { op: "rename", from: "userId", to: "user_id" },
-                { op: "set", field: "handled_by", value: "gateway" },
-            ],
-            responseBodyTransform: [
-                { op: "remove", field: "internal_db_id" },
-            ],
-        }
+    // Add to prisma/seed.ts
+    await prisma.gatewaySetting.createMany({
+        data: [
+            { key: "gateway_name", value: "Production Gateway" },
+            { key: "gateway_url", value: "http://localhost:3001" },
+        ],
+        skipDuplicates: true,
     });
 
-    // 2. Create the JWT protected route
-    await prisma.route.create({
-        data: {
-            id: "route_admin_jwt",
-            path: "/api/admin",
-            method: "ALL",
-            upstream: "http://localhost:4002",
-            stripPath: "/api",
-            enabled: true,
+    console.log("Seeding routes...");
 
-            // --- NEW: Auth Config ---
-            authMode: "jwt",
-            authJwtSecret: "your-test-secret-minimum-32-characters-long",
-            authJwtRequiredClaims: { role: "admin" }, // Only tokens with role="admin" allowed
+    const createdRoutes = await Promise.all(
+        ROUTES.map((r) =>
+            prisma.route.create({
+                data: {
+                    path: r.path,
+                    method: r.method,
+                    upstream: r.upstream,
+                    stripPath: r.stripPath,
+                    enabled: r.enabled,
+                    rateLimitMax: r.rateLimitMax,
+                    rateLimitWindowMs: r.rateLimitWindowMs,
+                    rateLimitKeyBy: r.rateLimitKeyBy,
+                    rateLimitKeyHeader: r.rateLimitKeyHeader,
+                    cbFailureThreshold: r.cbFailureThreshold,
+                    cbWindowSize: r.cbWindowSize,
+                    cbCooldownMs: r.cbCooldownMs,
+                    cbSuccessThreshold: r.cbSuccessThreshold,
+                    authMode: r.authMode,
+                    authJwtSecret: r.authJwtSecret,
+                    authJwtRequiredClaims: r.authJwtRequiredClaims ?? undefined,
+                    authKeyHeader: r.authKeyHeader,
+                    requestHeaderTransform: r.requestHeaderTransform ?? undefined,
+                    responseHeaderTransform: r.responseHeaderTransform ?? undefined,
+                    requestBodyTransform: r.requestBodyTransform ?? undefined,
+                    responseBodyTransform: r.responseBodyTransform ?? undefined,
+                    requestPathTransform: r.requestPathTransform ?? undefined,
+                },
+            })
+        )
+    );
+
+    console.log(`Created ${createdRoutes.length} routes`);
+
+    console.log("Seeding API keys...");
+
+    // After routes are created, scope some keys to specific routes
+    const enabledRoutes = createdRoutes.filter((r) => r.enabled);
+
+    const createdKeys = await Promise.all(
+        API_KEY_DEFINITIONS.map((k, i) => {
+            // Scope every 3rd key to a subset of routes
+            const routeScope =
+                i % 3 === 0
+                    ? []
+                    : enabledRoutes
+                        .slice(0, randomInt(1, 4))
+                        .map((r) => r.id);
+
+            return prisma.apiKey.create({
+                data: {
+                    name: k.name,
+                    keyHash: hashKey(k.plaintext),
+                    keyPrefix: k.plaintext.slice(0, 20),
+                    routeScope,
+                    expiresAt: k.expiresAt,
+                    enabled: k.enabled,
+                    lastUsedAt: k.lastUsedAt,
+                },
+            });
+        })
+    );
+
+    console.log(`Created ${createdKeys.length} API keys`);
+
+    console.log("Seeding request logs (this takes a moment)...");
+
+    // Generate logs spread across the last 7 days
+    // Heavy traffic during business hours, light overnight
+    const LOG_COUNT = 2000;
+    const now = new Date();
+
+    const logs = Array.from({ length: LOG_COUNT }, (_, i) => {
+        const route = randomItem(createdRoutes.filter((r) => r.enabled));
+
+        // Distribute timestamps across last 7 days with realistic hour weighting
+        const daysAgo = Math.random() * 7;
+        const hoursAgo = daysAgo * 24;
+        const timestamp = subHours(now, hoursAgo);
+
+        // More traffic during business hours (8am-8pm)
+        const hour = timestamp.getHours();
+        const isBusinessHours = hour >= 8 && hour <= 20;
+        if (!isBusinessHours && Math.random() > 0.25) {
+            // 75% chance of skipping off-hours slots to create realistic distribution
+            // Just reuse a business-hours timestamp instead
+            timestamp.setHours(randomInt(8, 20));
         }
+
+        const statusCode = weightedStatusCode();
+        const latencyMs = randomLatency(statusCode);
+        const isError = statusCode >= 500;
+        const isRateLimited = statusCode === 429;
+
+        const pathSuffixes = ["", "/1", "/2", "/abc", "/xyz789", "?page=1", "?limit=20"];
+        const incomingPath = route.path + randomItem(pathSuffixes);
+
+        return {
+            routeId: route.id,
+            method: route.method === "ALL" ? randomItem(["GET", "POST", "PUT", "DELETE"]) : route.method,
+            incomingPath,
+            upstreamUrl: route.upstream + incomingPath.replace(route.stripPath ?? "", ""),
+            statusCode,
+            latencyMs,
+            error: isError
+                ? randomItem([
+                    "Upstream connection timeout",
+                    "Upstream refused connection",
+                    "Read timeout after 10000ms",
+                    "Connection reset by peer",
+                    "SSL handshake failed",
+                ])
+                : null,
+            timestamp,
+        };
     });
 
-    // 3. Generate and save the test API Key
-    const { plaintextKey, hashedKey, prefix } = generateApiKey();
+    // Insert in batches of 200 to avoid overwhelming the connection
+    const BATCH_SIZE = 200;
+    for (let i = 0; i < logs.length; i += BATCH_SIZE) {
+        const batch = logs.slice(i, i + BATCH_SIZE);
+        await prisma.requestLog.createMany({ data: batch });
+        console.log(`  Inserted logs ${i + 1} to ${Math.min(i + BATCH_SIZE, logs.length)}`);
+    }
 
-    console.log("\n==================================================");
-    console.log("🔑 TEST API KEY GENERATED (Save this now!):");
-    console.log(plaintextKey);
-    console.log("==================================================\n");
-
-    await prisma.apiKey.create({
-        data: {
-            name: "Test Client Key",
-            keyHash: hashedKey,
-            keyPrefix: prefix,
-            routeScope: [],  // Empty array means this key works for ALL routes
-            enabled: true,
-        }
+    console.log(`Created ${LOG_COUNT} request logs`);
+    console.log("\nDone. Summary:");
+    console.log(`  Routes:       ${createdRoutes.length} (${createdRoutes.filter(r => r.enabled).length} enabled)`);
+    console.log(`  API Keys:     ${createdKeys.length} (${createdKeys.filter(k => k.enabled).length} enabled)`);
+    console.log(`  Request Logs: ${LOG_COUNT}`);
+    console.log("\nTest API keys (plaintext -- save these):");
+    API_KEY_DEFINITIONS.slice(0, 3).forEach(k => {
+        console.log(`  ${k.name}: ${k.plaintext}`);
     });
-
-    console.log("✅ Seeding complete.");
 }
 
 main()
-    .catch((e) => {
-        console.error("❌ Seeding failed:");
-        console.error(e);
+    .catch((err) => {
+        console.error("Seed failed:", err);
         process.exit(1);
     })
-    .finally(async () => {
-        await prisma.$disconnect();
-    });
+    .finally(() => prisma.$disconnect());

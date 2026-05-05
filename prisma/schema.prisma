@@ -5,7 +5,10 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
-
+enum Role {
+  USER
+  ADMIN
+}
 model Route {
   id        String   @id @default(cuid())
   path      String
@@ -40,24 +43,25 @@ responseBodyTransform   Json?
 }
 
 model RequestLog {
-  id           String   @id @default(cuid())
-  routeId      String
-  method       String
-  incomingPath String
-  upstreamUrl  String
-  statusCode   Int
-  latencyMs    Int
-  error        String?
-  timestamp    DateTime @default(now())
+  id             String   @id @default(cuid())
+  routeId        String
+  method         String
+  incomingPath   String
+  upstreamUrl    String
+  statusCode     Int
+  latencyMs      Int
+  error          String?
+  rateLimited    Boolean  @default(false)
+  circuitOpen    Boolean  @default(false)
+  clientIdentity String?
+  requestSize    Int?
+  responseSize   Int?
+  timestamp      DateTime @default(now())
 
   route Route @relation(fields: [routeId], references: [id], onDelete: Restrict)
 
-  // 1. Composite Index: Perfect for "Get logs for Route X between Time A and Time B"
   @@index([routeId, timestamp(sort: Desc)])
-  
-  // 2. Status Code Index: Perfect for "Count all 500 errors today"
   @@index([statusCode, timestamp(sort: Desc)])
-
   @@map("request_logs")
 }
 model ApiKey {
@@ -80,4 +84,71 @@ enum AuthMode {
   apiKey
   jwt
 
+}
+
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+role          Role      @default(USER)
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("accounts")
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@map("verifications")
+}
+
+model GatewaySetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("gateway_settings")
 }

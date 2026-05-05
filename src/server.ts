@@ -1,23 +1,30 @@
 import "dotenv/config";
 import express from "express";
 import { setupDatabaseListener } from "./config/db-listener";
-import { createGatewayHandler } from "./proxy/proxy-handler";
-import { errorHandler } from "./middleware/error-handler";
-import { loadRoutesFromDatabase, buildRouteTable } from "./config/routes";
-import { createRateLimiter } from "./middleware/rate-limiter";
+import { buildRouteTable, loadRoutesFromDatabase } from "./config/routes";
 import { createCircuitBreaker } from "./middleware/circuit-breaker";
+import { errorHandler } from "./middleware/error-handler";
+import { createRateLimiter } from "./middleware/rate-limiter";
+import { createGatewayHandler } from "./proxy/proxy-handler";
 import { RouteTableContainer } from "./types/index";
 
 import { redis } from "./lib/redis";
 import { createAuthEnforcer } from "./middleware/auth-enforcer";
 
 import { createRequestTransformer } from "./middleware/request-transformers";
+import cors from "cors";
 
-const PORT = process.env.PORT ?? 3000;
+const PORT = process.env.PORT ?? 8001;
 
 async function bootstrap(): Promise<void> {
     const app = express();
-
+    app.use(cors({
+        // Secure it to only allow your Next.js dashboard to access the Admin APIs
+        // In production, you would set DASHBOARD_URL in your .env
+        origin: process.env.DASHBOARD_URL ?? "http://localhost:3000",
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        credentials: true, // Required if your dashboard ever sends cookies/auth headers
+    }));
     app.use(express.json());
     app.use(express.urlencoded({ extended: true }));
 
@@ -37,6 +44,8 @@ async function bootstrap(): Promise<void> {
 
         // 👇 2. Make the health check async
         app.get("/gateway/health", async (_req, res) => {
+
+            
             try {
                 // Fetch health data for all routes in parallel
                 const routesHealth = await Promise.all(
