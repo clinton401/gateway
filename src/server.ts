@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express from "express";
+import express, {Request, Response} from "express";
 import { setupDatabaseListener } from "./config/db-listener";
 import { buildRouteTable, loadRoutesFromDatabase } from "./config/routes";
 import { createCircuitBreaker } from "./middleware/circuit-breaker";
@@ -43,7 +43,7 @@ async function bootstrap(): Promise<void> {
         // const routeTable = container.table;
 
         // 👇 2. Make the health check async
-        app.get("/gateway/health", async (_req, res) => {
+        app.get("/gateway/health", async (_req: Request, res: Response) => {
 
             
             try {
