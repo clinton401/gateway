@@ -9,7 +9,7 @@ export async function setupDatabaseListener(container: RouteTableContainer) {
 
     async function connectAndListen() {
         try {
-            client = new Client({ connectionString: process.env.DATABASE_URL });
+            client = new Client({ connectionString: process.env.DIRECT_URL });
 
             client.on("notification", async (msg) => {
                 if (msg.channel === "route_updates") {
