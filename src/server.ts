@@ -116,7 +116,7 @@ async function bootstrap(): Promise<void> {
         app.use(createGatewayHandler(container));
         app.use(errorHandler);
 
-        app.listen(PORT, () => {
+        app.listen(PORT as number, "0.0.0.0" , () => {
             console.info(`🚀 Gateway running on port ${PORT}`);
             console.info(`✅ Routes loaded: ${container.table.size}`);
         });
