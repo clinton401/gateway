@@ -1818,20 +1818,20 @@ const API_KEY_DEFINITIONS = [
 // Log generation config
 // ---------------------------------------------------------------------------
 
-const CLIENT_IPS = [
-    "192.168.1.1",
-    "192.168.1.45",
-    "45.76.12.102",
-    "45.76.12.198",
-    "12.231.45.6",
-    "12.231.45.89",
-    "172.16.0.5",
-    "172.16.0.23",
-    "104.21.45.67",
-    "104.21.45.234",
-    "198.51.100.14",
-    "203.0.113.42",
-];
+// const CLIENT_IPS = [
+//     "192.168.1.1",
+//     "192.168.1.45",
+//     "45.76.12.102",
+//     "45.76.12.198",
+//     "12.231.45.6",
+//     "12.231.45.89",
+//     "172.16.0.5",
+//     "172.16.0.23",
+//     "104.21.45.67",
+//     "104.21.45.234",
+//     "198.51.100.14",
+//     "203.0.113.42",
+// ];
 
 // ---------------------------------------------------------------------------
 // Main seed function
@@ -1925,7 +1925,7 @@ export async function runGatewaySeed() {
     const LOG_COUNT = 2000;
     const now = new Date();
 
-    const logs = Array.from({ length: LOG_COUNT }, (_, i) => {
+    const logs = Array.from({ length: LOG_COUNT }, () => {
         const route = randomItem(createdRoutes.filter((r) => r.enabled));
 
         // Distribute timestamps across last 7 days with realistic hour weighting
@@ -1945,7 +1945,6 @@ export async function runGatewaySeed() {
         const statusCode = weightedStatusCode();
         const latencyMs = randomLatency(statusCode);
         const isError = statusCode >= 500;
-        const isRateLimited = statusCode === 429;
 
         const pathSuffixes = ["", "/1", "/2", "/abc", "/xyz789", "?page=1", "?limit=20"];
         const incomingPath = route.path + randomItem(pathSuffixes);
