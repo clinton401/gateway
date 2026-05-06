@@ -13,6 +13,8 @@ import { createAuthEnforcer } from "./middleware/auth-enforcer";
 
 import { createRequestTransformer } from "./middleware/request-transformers";
 import cors from "cors";
+import cron from "node-cron";
+import { runGatewaySeed } from "./tasks/seed";
 
 const PORT = process.env.PORT ?? 8001;
 
@@ -115,6 +117,17 @@ async function bootstrap(): Promise<void> {
         app.use(createRequestTransformer(container));
         app.use(createGatewayHandler(container));
         app.use(errorHandler);
+        cron.schedule('0 0 * * *', async () => {
+            console.log("🕛 CRON: Running nightly database reset...");
+            try {
+                await runGatewaySeed();
+                console.log("✅ CRON: Nightly seed completed successfully.");
+            } catch (error) {
+                console.error("❌ CRON: Nightly seed failed:", error);
+            }
+        }, {
+            timezone: "Africa/Lagos" // Perfectly synced to your local time
+        });
 
         app.listen(PORT as number, "0.0.0.0" , () => {
             console.info(`🚀 Gateway running on port ${PORT}`);

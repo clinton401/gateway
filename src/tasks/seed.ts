@@ -1,7 +1,7 @@
 
 import { createHash } from "crypto";
 import { subDays, subHours, subMinutes, addDays } from "date-fns";
-import {prisma} from "../src/lib/prisma";
+import {prisma} from "../lib/prisma";
 
 // ---------------------------------------------------------------------------
 // Helpers
